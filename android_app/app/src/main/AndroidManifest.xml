@@ -33,6 +33,15 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- v1.6 扫码链接深链：opencode-remote://pair?relay=…&account=…&token=…
+                 二维码里就是这条链接。之前没声明这个 scheme，系统相机/浏览器扫出来
+                 点不动，只能用 App 内置扫码器；加上之后链接点了直接拉起 App 配对。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="opencode-remote" android:host="pair" />
+            </intent-filter>
         </activity>
 
         <!-- 后台保活与长任务常驻进度服务 -->

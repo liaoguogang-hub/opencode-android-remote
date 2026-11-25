@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         // v1.6 P0: 应用已在前台时，点击通知同样跳转到对应会话
         handleNotificationDeepLink(intent)
+        handlePairingDeepLink(intent)
     }
 
     /**
@@ -82,6 +83,24 @@ class MainActivity : ComponentActivity() {
         viewModel.switchSession(sessionId)
     }
 
+    /**
+     * v1.6 扫码链接深链：opencode-remote://pair?relay=…&account=…&token=…
+     *
+     * 二维码里的内容就是这条链接。除了 App 内置扫码器，系统相机扫出来、或者在
+     * 浏览器里点开这条链接，都应该能直接把 App 拉起来完成配对——之前 manifest
+     * 没声明这个 scheme，链接点了没反应。
+     */
+    private fun handlePairingDeepLink(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "opencode-remote") return
+        if (data.host != "pair") return
+        val relay = data.getQueryParameter("relay")?.takeIf { it.isNotBlank() } ?: return
+        val account = data.getQueryParameter("account")?.takeIf { it.isNotBlank() } ?: return
+        val token = data.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: return
+        val name = data.getQueryParameter("name").orEmpty()
+        viewModel.claimPairingByQr(relay, account, token, name) { _, _ -> }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -94,6 +113,8 @@ class MainActivity : ComponentActivity() {
 
         // v1.6 P0 任务通知：处理通知深链（点击通知直达对应会话）
         handleNotificationDeepLink(intent)
+        // v1.6 扫码链接深链：opencode-remote://pair?relay=…&account=…&token=…
+        handlePairingDeepLink(intent)
 
         // P1-5: 运行时申请通知权限 (Android 13+ / API 33+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
