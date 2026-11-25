@@ -85,6 +85,8 @@ async def handle_mobile_message(
             logger.warning(f"E2EE 解密 incoming 异常: {e}")
             msg_data["_e2ee_failed"] = str(e)
     action = msg_data.get("action") or msg_data.get("type")
+    # 诊断：手机上每个动作都留一行，出问题能直接看出「请求到底到没到电脑端」
+    logger.info(f"← mobile action={action} session={msg_data.get('session_id') or (msg_data.get('payload') or {}).get('session_id', '')}")
     # v4.6.0 P1-3 fail-closed：已协商对端后，控制类消息必须带合法 e2ee 信封，
     # 明文 / 信封非法一律拒绝（防恶意 relay 注入指令、伪造审批）
     if _em is not None and not _em.control_allowed(action, msg_data):
@@ -200,6 +202,7 @@ async def handle_mobile_message(
         except Exception as e:
             logger.error(f"Error querying session history: {e}")
             msgs = []
+        logger.info(f"→ 回传历史 {len(msgs)} 条 (session={sid[:20]}…)")
         await ws_relay.send(json.dumps({
             "type": "session_history",
             "req_id": req_id,

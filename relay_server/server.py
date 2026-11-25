@@ -431,6 +431,15 @@ class ConnectionManager:
         is_master = hmac.compare_digest(room["secret_hash"], secret_hash)
         device_info = None if is_master else room.get("device_secrets", {}).get(secret_hash)
         if not is_master and not device_info:
+            # 诊断：只打 hash 前缀，不打 secret 本身。能直接看出「手机上存的密钥
+            # 和 relay 手里的是不是同一把」，比猜快。
+            logger.warning(
+                "auth reject: client_type=%s got_hash=%s known=%s master=%s",
+                getattr(session, "client_type", "?"),
+                secret_hash[:16],
+                sorted(h[:16] for h in room.get("device_secrets", {})) or "[]",
+                room["secret_hash"][:16],
+            )
             return False, "Invalid secret for account_id."
         if device_info:
             session.device_name = device_info.get("device_name", "unknown")
@@ -1019,6 +1028,17 @@ async def websocket_endpoint(
     session: Optional[ClientSession] = None
     try:
         raw_auth_msg = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+        # 诊断：记录首帧的类型/动作（不记录 secret 明文）
+        try:
+            _peek = json.loads(raw_auth_msg)
+            _t = _peek.get("type") if isinstance(_peek, dict) else "?"
+            logger.info(
+                "first frame from %s: type=%s keys=%s",
+                client_ip, _t,
+                sorted(_peek.keys()) if isinstance(_peek, dict) else "non-dict",
+            )
+        except Exception:
+            logger.info("first frame from %s is not JSON: %r", client_ip, raw_auth_msg[:120])
         auth_data = json.loads(raw_auth_msg)
         # v4.7.0/R7: 首帧必须为 JSON 对象
         if not isinstance(auth_data, dict):
@@ -1086,10 +1106,16 @@ async def websocket_endpoint(
                 except Exception:
                     pass
         else:
-            rate_limiter.record_auth_failure(client_ip, account_id or "")
+            # 配对码过期/已被用掉不是暴力破解，不该计入 auth failure 把用户关小黑屋。
+            reason = result.get("error", "配对失败")
+            logger.warning(
+                "pair_claim rejected for %s: %s (token_prefix=%s live_tokens=%d)",
+                client_ip, reason, (pairing_token or "")[:8],
+                len(manager.pairing_sessions),
+            )
             await websocket.send_text(json.dumps({
                 "type": "pair_error",
-                "message": result.get("error", "配对失败")
+                "message": reason,
             }))
         await websocket.close(code=1000, reason="Pairing done")
         return
@@ -1171,6 +1197,12 @@ async def websocket_endpoint(
             await websocket.close(code=4401, reason="v4 requires device_id")
             return
     # B-8: 透传 admin_token 供建房校验
+    # 诊断：手机上送的 secret 到底长什么样（只打长度与 hash 前缀，不打明文）。
+    logger.info(
+        "auth attempt: type=%s account=%s secret_len=%d secret_hash=%s",
+        client_type, account_id,
+        len(secret or ""), hashlib.sha256((secret or "").encode()).hexdigest()[:16],
+    )
     success, reason = manager.register_authenticated(session, secret, auth_data.get("admin_token", ""))
     if not success:
         rate_limiter.record_auth_failure(client_ip, account_id)

@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 #
-# 反复向 relay 申请一次性配对码，把最新的配对链接和二维码写到公开目录。
+# 配对码服务：常驻一个 desktop 连接，不断申请一次性配对码，把最新的链接和二维码
+# 写到公开目录。
 #
-# 配对码一次性、TTL 只有 120 秒，手机不一定赶得上。所以这里常驻循环：
-# 每轮生成一个新码并覆盖公开文件，用户什么时候想连就扫最新的那张。
+# 为什么不能「发完码就断开」
+# ------------------------
+# 配对码是 relay 内存里的一次性凭证，只有**发码的那个连接**知道它，而且
+# 兑换（pair_claim）必须发生在码还有效时。早先的实现是每次跑一遍 `agent.py pair`
+# —— 它在拿到码、打印出来后等 120 秒就退出，然后重新发一张新码。手机上拿到的
+# 链接往往已经过期或者指向一张早被作废的码，兑换必然失败。
 #
-# 依赖：desktop_agent 的依赖已装好（venv 在仓库根的 .venv）。
+# 现在的做法：常驻一条连接，每 30 秒提一张新码写文件，同时**持续监听** device_paired。
+# 手机扫到哪张都能兑换成功。
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,36 +20,16 @@ STATE="${STATE:-$HOME/.local/share/opencode-remote}"
 PUB="${PUB:-$HOME/.local/share/kimi-apk-dist/opencode}"
 RELAY_URL="${RELAY_SERVER_URL:-wss://43.143.76.55/opencode-relay}"
 ACCOUNT="${OPENCODE_ACCOUNT_ID:-kestrel}"
-INTERVAL="${INTERVAL:-30}"
 
 mkdir -p "$STATE" "$PUB"
 
-while true; do
-  set -a; . "$STATE/relay.env" 2>/dev/null || true; set +a
-  export RELAY_SERVER_URL="$RELAY_URL" OPENCODE_ACCOUNT_ID="$ACCOUNT"
-  # 独立的 device_id：和常驻桥接同 ID 会互相踢（relay 会把同 ID 的旧 desktop 顶掉）
-  export OPENCODE_DEVICE_ID_FILE="$STATE/.pairing_device_id"
-  export OPENCODE_SERVER_URL="${OPENCODE_SERVER_URL:-http://127.0.0.1:4096}"
-  export AGENT_FILE_ROOTS="${AGENT_FILE_ROOTS:-/home/kestrel/workspace}"
+# 与常驻桥接分开的 device_id，否则 relay 会把桥接顶下线
+export OPENCODE_DEVICE_ID_FILE="$STATE/.pairing_device_id"
+export RELAY_SERVER_URL="$RELAY_URL"
+export OPENCODE_ACCOUNT_ID="$ACCOUNT"
+export OPENCODE_SERVER_URL="${OPENCODE_SERVER_URL:-http://127.0.0.1:4096}"
+export AGENT_FILE_ROOTS="${AGENT_FILE_ROOTS:-/home/kestrel/workspace}"
+set -a; . "$STATE/relay.env" 2>/dev/null || true; set +a
 
-  # -u 必须加：管道下 Python 是块缓冲，进程被 timeout 杀掉时缓冲区里的
-  # 配对链接会丢（只看到二维码）
-  out=$(timeout 100 "$ROOT/.venv/bin/python" -u "$ROOT/desktop_agent/agent.py" pair 2>&1)
-  link=$(printf '%s\n' "$out" | grep -oE "opencode-remote://pair\?[^ ]+" | head -1)
-  if [ -n "$link" ]; then
-    printf '%s\n' "$link" > "$STATE/pair-link.txt"
-    printf '%s\n' "$link" > "$PUB/pair-link.txt"
-    "$ROOT/.venv/bin/python" - "$link" "$PUB/pair-qr.png" <<'PY'
-import sys
-import qrcode
-qr = qrcode.QRCode(border=2)
-qr.add_data(sys.argv[1])
-qr.make()
-qr.make_image().save(sys.argv[2])
-PY
-    echo "[$(date +%H:%M:%S)] 新配对码已生成 → $PUB/pair-qr.png"
-  else
-    echo "[$(date +%H:%M:%S)] 配对码申请失败：$(printf '%s\n' "$out" | tail -2)"
-  fi
-  sleep "$INTERVAL"
-done
+exec "$ROOT/.venv/bin/python" -u "$HERE/pair-daemon.py" \
+  --relay "$RELAY_URL" --account "$ACCOUNT" --state "$STATE" --pub "$PUB"

@@ -82,7 +82,7 @@ else
 fi
 
 # ---------------------------------------------------------------- 4. 配对码循环
-if alive "pair-loop.sh"; then
+if alive "pair-daemon.py"; then
   ok "配对码循环在跑"
 elif [ "$REPORT_ONLY" -eq 1 ]; then
   bad "配对码循环没跑"
@@ -90,7 +90,8 @@ else
   log "拉起配对码循环…"
   setsid nohup bash "$HERE/pair-loop.sh" > "$STATE/pair-loop.log" 2>&1 < /dev/null &
   sleep 3
-  alive "pair-loop.sh" && ok "配对码循环已启动" || bad "配对码循环启动失败"
+  sleep 6
+  alive "pair-daemon.py" && ok "配对码循环已启动" || bad "配对码循环启动失败，看 $STATE/pair-loop.log"
 fi
 
 # ---------------------------------------------------------------- 5. Caddy 路由
