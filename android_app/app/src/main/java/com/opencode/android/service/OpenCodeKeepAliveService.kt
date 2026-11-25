@@ -27,7 +27,11 @@ class OpenCodeKeepAliveService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var taskStartTimeMs: Long = 0L
-    private var currentStep: String = getString(R.string.svc_001)
+    // 注意：不要在字段初始化里调 getString()。
+    // Service 的构造函数执行时 base context 还没 attach（attachBaseContext 在实例化之后），
+    // 此时 Context.getString() → getResources() 会 NPE，服务一创建就崩。
+    // 改成 onCreate 里再取文案（那时 context 已就绪）。
+    private var currentStep: String = ""
     private var currentSessionId: String = ""
     private var isTaskRunning = false
 
@@ -267,6 +271,7 @@ class OpenCodeKeepAliveService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        currentStep = getString(R.string.svc_001)
         createNotificationChannels()
     }
 
