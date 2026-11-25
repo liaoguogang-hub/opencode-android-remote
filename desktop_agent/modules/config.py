@@ -28,7 +28,13 @@ AGENT_CAPABILITIES = [
 ]
 
 # v3.0: desktop 稳定设备 ID（多 desktop 区分），存于配置目录
-_DESKTOP_DEVICE_ID_FILE = os.path.join(_DEFAULT_SECRET_DIR, ".desktop_device_id")
+# 设备 ID 文件路径可配：同一个房间里多个 desktop 共存时靠它区分。
+# 同一份 device_id 再连一次，relay 会把前一个踢掉（"Replaced by new authenticated
+# desktop session"）—— 配对码循环如果和常驻桥接用同一个 ID，就会互相踢。
+_DESKTOP_DEVICE_ID_FILE = os.getenv(
+    "OPENCODE_DEVICE_ID_FILE",
+    os.path.join(_DEFAULT_SECRET_DIR, ".desktop_device_id"),
+)
 
 def get_desktop_device_id() -> str:
     """读取或创建本机 desktop 设备 ID（多 desktop 共存的区分键）。"""

@@ -21,6 +21,8 @@ mkdir -p "$STATE" "$PUB"
 while true; do
   set -a; . "$STATE/relay.env" 2>/dev/null || true; set +a
   export RELAY_SERVER_URL="$RELAY_URL" OPENCODE_ACCOUNT_ID="$ACCOUNT"
+  # 独立的 device_id：和常驻桥接同 ID 会互相踢（relay 会把同 ID 的旧 desktop 顶掉）
+  export OPENCODE_DEVICE_ID_FILE="$STATE/.pairing_device_id"
   export OPENCODE_SERVER_URL="${OPENCODE_SERVER_URL:-http://127.0.0.1:4096}"
   export AGENT_FILE_ROOTS="${AGENT_FILE_ROOTS:-/home/kestrel/workspace}"
 
