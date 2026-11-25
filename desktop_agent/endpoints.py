@@ -8,6 +8,7 @@ B1: opencode 上游端点配置表 + GET /doc 契约探测。
 /doc 不存在（老版本）-> 降级为警告，不硬拦。
 """
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -39,6 +40,16 @@ ENDPOINTS: Dict[str, Endpoint] = {
     "event_stream":       Endpoint("GET",  "/event", candidates=("/event", "/global/event")),
 }
 # /doc 本身是探测工具，不列入被校验集合。
+
+
+def _norm_path(path: str) -> str:
+    """路径参数名归一化：把 {xxx} 换成 {}。
+
+    opencode 的 OpenAPI 里路径参数名会随版本变（1.18.x 用 {sessionID}），
+    而端点表里写的是调用侧的占位名（{id}）。契约校验必须比归一化后的路径，
+    否则同一个端点会被误判成缺失。
+    """
+    return re.sub(r"\{[^/{}]+\}", "{}", path)
 
 
 def build_url(name: str, base_url: str, **params) -> str:
@@ -85,12 +96,16 @@ async def verify_contract(session, base_url: str, password: Optional[str] = None
         return ContractResult(ok=True, doc_available=False)
 
     paths = set((spec.get("paths") or {}).keys())
+    # 路径参数名按归一化后的形式比较：端点表用的是调用侧占位名（{id}），
+    # opencode 的 OpenAPI 里参数名随版本变（1.18.x 是 {sessionID}）。
+    # 按字面量比会把「同一个端点」误判成缺失，桥接因此拒绝启动。
+    norm_paths = {_norm_path(p) for p in paths}
     missing: List[str] = []
     for name, ep in ENDPOINTS.items():
         if not ep.required:
             continue
         check_paths = ep.candidates if ep.candidates else (ep.path,)
-        if not any(p in paths for p in check_paths):
+        if not any(_norm_path(p) in norm_paths for p in check_paths):
             missing.append(f"{ep.method} {ep.path}")
 
     version = (spec.get("info") or {}).get("version")

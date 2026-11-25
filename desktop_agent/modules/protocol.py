@@ -638,7 +638,15 @@ async def run_pairing_flow(account_id: str, secret: str, relay_url: str):
             # 等待配对完成通知
             try:
                 while True:
-                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=float(ttl + 10)))
+                    raw = await asyncio.wait_for(ws.recv(), timeout=float(ttl + 10))
+                    msg = json.loads(raw)
+                    # 应用层心跳：relay 每 25 秒发一次 ping，35 秒内不回 pong 就判定
+                    # 僵尸连接并主动断开（relay_server/server.py: check_heartbeats）。
+                    # 配对流程原来直接忽略这类帧，等于不回应心跳 —— 手机还没扫码，
+                    # 连接就先被 relay 掐了。
+                    if msg.get("type") == "ping":
+                        await ws.send(json.dumps({"type": "pong"}))
+                        continue
                     if msg.get("type") == "device_paired":
                         print(f"\n  ✔ 配对成功！新设备：{msg.get('device_name')}")
                         print("  该设备已获得独立密钥，可随时在桌面端撤销。")
