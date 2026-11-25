@@ -85,8 +85,14 @@ async def handle_mobile_message(
             logger.warning(f"E2EE 解密 incoming 异常: {e}")
             msg_data["_e2ee_failed"] = str(e)
     action = msg_data.get("action") or msg_data.get("type")
-    # 诊断：手机上每个动作都留一行，出问题能直接看出「请求到底到没到电脑端」
-    logger.info(f"← mobile action={action} session={msg_data.get('session_id') or (msg_data.get('payload') or {}).get('session_id', '')}")
+    # 诊断：手机上每个动作都留一行，出问题能直接看出「请求到底到没到电脑端」。
+    # 连信封的形状也记一下（加密的控制消息这里能看到 e2ee/encrypted_payload）。
+    logger.info(
+        "← mobile action=%s session=%s keys=%s",
+        action,
+        msg_data.get("session_id") or (msg_data.get("payload") or {}).get("session_id", ""),
+        sorted(msg_data.keys()),
+    )
     # v4.6.0 P1-3 fail-closed：已协商对端后，控制类消息必须带合法 e2ee 信封，
     # 明文 / 信封非法一律拒绝（防恶意 relay 注入指令、伪造审批）
     if _em is not None and not _em.control_allowed(action, msg_data):
@@ -485,6 +491,64 @@ async def do_hello_handshake(ws) -> dict:
 # ==============================================================================
 # Agent 主运行循环与自动重连
 # ==============================================================================
+def _publish_pairing(msg: dict, account_id: str, relay_url: str, desktop_name: str) -> None:
+    """把 relay 发来的配对码写成链接与二维码（两份：状态目录 + 公网目录）。"""
+    import urllib.parse
+    token = msg.get("pairing_token") or ""
+    if not token:
+        return
+    link = "opencode-remote://pair?" + urllib.parse.urlencode({
+        "relay": relay_url,
+        "account": account_id,
+        "token": token,
+        "name": desktop_name,
+    })
+    dirs = [
+        os.environ.get("OPENCODE_PAIRING_PUB_DIR"),
+        os.environ.get("OPENCODE_PAIRING_STATE_DIR"),
+    ]
+    for d in filter(None, dirs):
+        try:
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "pair-link.txt"), "w", encoding="utf-8") as f:
+                f.write(link + "\n")
+            import qrcode
+            qr = qrcode.QRCode(border=2)
+            qr.add_data(link)
+            qr.make()
+            qr.make_image().save(os.path.join(d, "pair-qr.png"))
+        except Exception as e:
+            logger.warning(f"写配对码产物失败 ({d}): {e}")
+    logger.info(f"新配对码 {token[:8]}…（ttl={msg.get('ttl_seconds')}s）")
+
+
+async def pairing_code_refresher(
+    ws: "websockets.WebSocketClientProtocol",
+    account_id: str,
+    relay_url: str,
+    interval: int = 30,
+):
+    """在这条常驻连接上持续申请一次性配对码，并把链接与二维码写到公开目录。
+
+    配对码是一次性的、TTL 只有 120 秒，所以要不停换新的；手机扫到哪张都能用。
+    """
+    import socket as _socket
+    import urllib.parse
+    desktop_name = _socket.gethostname()
+    pub_dir = os.environ.get("OPENCODE_PAIRING_PUB_DIR")
+    state_dir = os.environ.get("OPENCODE_PAIRING_STATE_DIR")
+    while True:
+        try:
+            await ws.send(json.dumps({
+                "type": "create_pairing",
+                "desktop_name": desktop_name,
+            }))
+        except Exception as e:
+            logger.info(f"配对码刷新中断（连接已断）: {e}")
+            return
+        await asyncio.sleep(interval)
+
+
 async def run_desktop_agent(account_id: str, secret: str, relay_url: str):
     # v4.7.0/P1-7: 仅首次生成 secret 时打印明文，常驻启动不再打印（防进日志）
     print_pairing_banner(account_id, secret, relay_url,
@@ -499,6 +563,8 @@ async def run_desktop_agent(account_id: str, secret: str, relay_url: str):
     backoff = 3.0
     max_backoff = 60.0
     backoff_factor = 1.5
+    import socket as _socket  # 配对码里显示的电脑名
+    desktop_name = _socket.gethostname()
 
     async with aiohttp.ClientSession() as http_session:
         # 启动自检
@@ -560,11 +626,25 @@ async def run_desktop_agent(account_id: str, secret: str, relay_url: str):
                     event_listener_task = asyncio.create_task(
                         listen_opencode_events_stream(ws, http_session)
                     )
+                    # 持续发放一次性配对码（手机扫码/点链接用）。
+                    # 必须在**这条常驻连接**上发：配对码只属于申请它的那条连接，
+                    # 而 relay 把「最近认证的 desktop」当主路由目标 —— 另开一条
+                    # 连接来发码会把主 desktop 抢走，手机的消息就全发到那条连接上了。
+                    pairing_task = asyncio.create_task(
+                        pairing_code_refresher(ws, account_id, relay_url)
+                    )
 
                     try:
                         async for raw_msg in ws:
                             try:
                                 msg_data = json.loads(raw_msg)
+                                # 配对码是给「人」的产物，不是给 agent 的消息：
+                                # 在这里落成 pair-link.txt / pair-qr.png 供手机扫描。
+                                if msg_data.get("type") == "pairing_created":
+                                    _publish_pairing(
+                                        msg_data, account_id, relay_url, desktop_name
+                                    )
+                                    continue
                                 await handle_mobile_message(msg_data, ws, http_session)
                             except json.JSONDecodeError:
                                 logger.error(f"Received malformed JSON from relay: {raw_msg}")
@@ -572,6 +652,7 @@ async def run_desktop_agent(account_id: str, secret: str, relay_url: str):
                                 logger.error(f"Error handling mobile message: {e}")
                     finally:
                         event_listener_task.cancel()
+                        pairing_task.cancel()
 
             except (websockets.exceptions.ConnectionClosedError,
                     websockets.exceptions.ConnectionClosedOK,

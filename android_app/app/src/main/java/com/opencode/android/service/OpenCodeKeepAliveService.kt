@@ -315,18 +315,24 @@ class OpenCodeKeepAliveService : Service() {
 
     private fun startForegroundWithServiceType() {
         val notification = buildProgressNotification()
+        // 运行时传的 type 必须是 manifest 声明类型的子集，否则系统直接抛
+        // IllegalArgumentException：
+        //   foregroundServiceType 0x00000001 is not a subset of 0x40000000
+        // —— 而这个服务正是「用户点发送」时启动的，所以表现为一发消息就崩。
+        //
+        // manifest 声明的是 specialUse|dataSync（两个都声明，任意一个都是子集）：
+        //   * Android 14+ 用 specialUse —— dataSync 在 Android 15 上有 6 小时
+        //     累计上限，跑长任务会被系统停掉（上游 B-11 改成 specialUse 的原因）；
+        //   * Android 10–13 没有 specialUse 这个类型常量，只能用 dataSync。
+        // 之前只在 14+ 传 specialUse，低版本传 dataSync 而 manifest 没声明它 ——
+        // 于是在 Android 12/13 上照样崩。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // manifest 里声明的是 specialUse，运行时传的 type 必须是它的子集，
-            // 否则 Android 14+ 直接 IllegalArgumentException：
-            //   foregroundServiceType 0x00000001 is not a subset of 0x40000000
-            // —— 一发消息就崩（正好是用户点发送的时刻）。
             startForeground(
                 NOTIFICATION_ID_PROGRESS,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             )
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10–13 没有 specialUse，只能用 dataSync
             startForeground(
                 NOTIFICATION_ID_PROGRESS,
                 notification,

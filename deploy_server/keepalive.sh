@@ -81,18 +81,41 @@ else
   alive "agent.py run" && ok "桌面桥接已启动" || bad "桥接启动失败，看 $STATE/agent.log"
 fi
 
-# ---------------------------------------------------------------- 4. 配对码循环
-if alive "pair-daemon.py"; then
-  ok "配对码循环在跑"
+# ---------------------------------------------------------------- 4. 配对码
+
+# 配对码由桌面桥接在自己的常驻连接上发放（desktop_agent/modules/protocol.py:
+
+# pairing_code_refresher）。早先另起一个 daemon 发码，relay 把「最近认证的
+
+# desktop」当作主路由目标，结果手机的消息都发到那条发码连接上 ——
+
+# 表现为「App 显示已连接，但发消息电脑端收不到」。
+
+if [ -s "$PUB/pair-link.txt" ]; then
+
+  age=$(( $(date +%s) - $(stat -c %Y "$PUB/pair-link.txt") ))
+
+  if [ "$age" -lt 180 ]; then
+
+    ok "配对码新鲜（${age}s 前更新）"
+
+  else
+
+    warn "配对码已 ${age}s 没更新 —— 桥接可能没连上"
+
+  fi
+
 elif [ "$REPORT_ONLY" -eq 1 ]; then
-  bad "配对码循环没跑"
+
+  bad "还没有配对码"
+
 else
-  log "拉起配对码循环…"
-  setsid nohup bash "$HERE/pair-loop.sh" > "$STATE/pair-loop.log" 2>&1 < /dev/null &
-  sleep 3
-  sleep 6
-  alive "pair-daemon.py" && ok "配对码循环已启动" || bad "配对码循环启动失败，看 $STATE/pair-loop.log"
+
+  warn "还没有配对码，等桥接连上后会生成"
+
 fi
+
+
 
 # ---------------------------------------------------------------- 5. Caddy 路由
 route_out=$(python3 "$HERE/ensure-relay-route.py" --check 2>&1)
