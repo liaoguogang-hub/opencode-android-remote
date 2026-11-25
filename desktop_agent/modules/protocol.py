@@ -87,12 +87,13 @@ async def handle_mobile_message(
     action = msg_data.get("action") or msg_data.get("type")
     # 诊断：手机上每个动作都留一行，出问题能直接看出「请求到底到没到电脑端」。
     # 连信封的形状也记一下（加密的控制消息这里能看到 e2ee/encrypted_payload）。
-    logger.info(
-        "← mobile action=%s session=%s keys=%s",
-        action,
-        msg_data.get("session_id") or (msg_data.get("payload") or {}).get("session_id", ""),
-        sorted(msg_data.keys()),
-    )
+    # ping 心跳每 25 秒一次，不记；其余动作各留一行，排查时能看出请求到没到
+    if action != "ping":
+        logger.info(
+            "← mobile action=%s session=%s",
+            action,
+            msg_data.get("session_id") or (msg_data.get("payload") or {}).get("session_id", ""),
+        )
     # v4.6.0 P1-3 fail-closed：已协商对端后，控制类消息必须带合法 e2ee 信封，
     # 明文 / 信封非法一律拒绝（防恶意 relay 注入指令、伪造审批）
     if _em is not None and not _em.control_allowed(action, msg_data):
@@ -491,6 +492,63 @@ async def do_hello_handshake(ws) -> dict:
 # ==============================================================================
 # Agent 主运行循环与自动重连
 # ==============================================================================
+_PAIR_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>配对 OpenCode Remote</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #0b1220; color: #e6edf7;
+    font: 16px/1.6 -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    padding: 24px;
+  }
+  .card { width: 100%; max-width: 420px; }
+  h1 { font-size: 21px; margin: 0 0 8px; }
+  p { margin: 0 0 18px; color: #9fb0c9; font-size: 14px; }
+  a.btn {
+    display: block; text-align: center; text-decoration: none;
+    background: #2f6feb; color: #fff; font-weight: 600; font-size: 17px;
+    padding: 16px; border-radius: 12px; margin-bottom: 14px;
+  }
+  a.btn:active { background: #2559c4; }
+  img { width: 100%; max-width: 260px; display: block; margin: 0 auto 14px; border-radius: 10px; background: #fff; padding: 10px; }
+  .note { font-size: 13px; color: #7f90a8; }
+  code {
+    display: block; word-break: break-all; background: #131c2e; color: #9fb0c9;
+    padding: 10px; border-radius: 8px; font-size: 11px; margin-top: 10px;
+  }
+  .stale { background: #3a2a12; color: #ffd08a; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>配对 OpenCode Remote</h1>
+  <p>点下面的按钮会直接打开手机上的 OpenCode App 完成配对。</p>
+  <div class="stale" id="stale" hidden>
+    这个配对码可能已经过期了（超过 2 分钟）。请刷新本页拿最新的码。
+  </div>
+  <a class="btn" id="go" href="__PAIR_URI__">打开 App 并配对</a>
+  <img src="pair-qr.png" alt="配对二维码">
+  <p class="note">按钮没反应？用 App 里的「扫码」扫上面这张二维码，或复制下面的链接到 App。</p>
+  <code id="uri">__PAIR_URI__</code>
+</div>
+<script>
+  // 配对码 TTL 只有 120 秒；页面停留太久就提示刷新，免得用户对着一张废码反复试。
+  var loaded = Date.now();
+  setInterval(function () {
+    if (Date.now() - loaded > 110000) document.getElementById('stale').hidden = false;
+  }, 5000);
+</script>
+</body>
+</html>
+"""
+
+
 def _publish_pairing(msg: dict, account_id: str, relay_url: str, desktop_name: str) -> None:
     """把 relay 发来的配对码写成链接与二维码（两份：状态目录 + 公网目录）。"""
     import urllib.parse
@@ -517,6 +575,10 @@ def _publish_pairing(msg: dict, account_id: str, relay_url: str, desktop_name: s
             qr.add_data(link)
             qr.make()
             qr.make_image().save(os.path.join(d, "pair-qr.png"))
+            # 纯文本的 pair-link.txt 在手机浏览器里只是一行字，点不动。
+            # 额外写一个可点的配对页：手机上打开这个网址，点按钮就拉起 App。
+            with open(os.path.join(d, "pair.html"), "w", encoding="utf-8") as f:
+                f.write(_PAIR_HTML.replace("__PAIR_URI__", link))
         except Exception as e:
             logger.warning(f"写配对码产物失败 ({d}): {e}")
     logger.info(f"新配对码 {token[:8]}…（ttl={msg.get('ttl_seconds')}s）")
