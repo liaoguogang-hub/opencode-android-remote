@@ -83,6 +83,51 @@ async def query_sessions(
     return []
 
 
+async def query_session_messages(
+    session: aiohttp.ClientSession,
+    session_id: str,
+    base_url: str = DEFAULT_OPENCODE_BASE_URL,
+    password: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    取一个会话的历史消息：GET /session/{id}/message
+
+    opencode 的返回是 [{"info": {role, time, id}, "parts": [{type, text}, ...]}, ...]，
+    这里压平成手机端能直接渲染的 [{"id", "role", "text"}]，只保留有文本的部分。
+    """
+    if not session_id:
+        return []
+    url = build_url("session_messages", base_url, id=session_id)
+    headers = get_auth_headers(password)
+    try:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8.0)) as resp:
+            if resp.status != 200:
+                logger.warning(f"GET {url} returned HTTP {resp.status}")
+                return []
+            raw = await resp.json()
+    except Exception as e:
+        logger.error(f"Failed to query session messages from {url}: {e}")
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in (raw if isinstance(raw, list) else raw.get("items", []) or []):
+        info = item.get("info") or {}
+        role = info.get("role") or "assistant"
+        text = "".join(
+            p.get("text", "") for p in (item.get("parts") or [])
+            if p.get("type") == "text" and p.get("text")
+        )
+        if not text.strip():
+            continue
+        out.append({
+            "id": info.get("id") or f"msg-{len(out)}",
+            "role": role,
+            "text": text,
+            "time": (info.get("time") or {}).get("created"),
+        })
+    return out
+
+
 async def create_session(
     session: aiohttp.ClientSession,
     title: str = "New Mobile Session",

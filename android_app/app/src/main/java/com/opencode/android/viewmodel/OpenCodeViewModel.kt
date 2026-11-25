@@ -328,6 +328,8 @@ class OpenCodeViewModel(application: Application) : AndroidViewModel(application
         if (restored.isNotEmpty()) {
             _uiState.update { it.copy(messages = restored) }
         }
+        // v5.1.1: 本地没有缓存（电脑端聊过的会话）就向电脑端要历史
+        relayClient.sendSessionHistory(sessionId)
     }
 
     /** v5.0.3 (B-6): 把某会话当前消息写到本地缓存（IO 线程，不阻塞主线程） */
@@ -739,6 +741,29 @@ class OpenCodeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /**
+     * v5.1.1: 电脑端发来的会话历史。
+     *
+     * 之前手机只显示「自己这一路聊出来的」消息（本地缓存），电脑端聊过的老会话
+     * 点进去是空的 —— 现在打开会话时向电脑端要一次历史，铺到聊天区。
+     */
+    override fun onSessionHistoryReceived(sessionId: String, messages: List<Pair<String, String>>) {
+        if (sessionId.isBlank() || messages.isEmpty()) return
+        val chats = messages.mapIndexed { i, (role, text) ->
+            ChatMessage(
+                id = "hist-$sessionId-$i",
+                role = if (role == "user") MessageRole.USER else MessageRole.ASSISTANT,
+                content = text,
+            )
+        }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { messageStore.save(sessionId, chats) }
+        }
+        if (sessionId == _uiState.value.currentSessionId) {
+            _uiState.update { it.copy(messages = chats) }
+        }
+    }
+
     override fun onSessionsListReceived(sessions: List<SessionItem>) {
         val next = _uiState.updateAndGet { state ->
             val merged = if (sessions.isEmpty()) {
@@ -764,6 +789,10 @@ class OpenCodeViewModel(application: Application) : AndroidViewModel(application
             )
         }
         persistSessions(next.availableSessions)
+        // v5.1.1: 列表到齐后拉一次当前会话的历史，否则老会话在手机上是空的
+        if (next.currentSessionId.isNotBlank()) {
+            relayClient.sendSessionHistory(next.currentSessionId)
+        }
     }
 
     // ============ P2-12: 文件浏览器 ============

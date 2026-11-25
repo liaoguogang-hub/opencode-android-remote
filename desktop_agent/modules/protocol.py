@@ -15,6 +15,7 @@ from opencode_api import (
     DEFAULT_OPENCODE_BASE_URL,
     check_opencode_health,
     query_sessions,
+    query_session_messages,
     create_session,
     abort_session,
     respond_to_permission,
@@ -187,6 +188,24 @@ async def handle_mobile_message(
                 "vcs": {},
                 "error": str(e),
             }))
+
+    # 2.5 拉取会话历史 —— 手机上打开一个老会话时，之前只能显示本地缓存，
+    #     电脑端那边聊出来的内容在手机上根本看不到（会话列表有，点进去是空的）。
+    elif action == "get_session_history":
+        sid = str(payload.get("session_id") or "")
+        try:
+            msgs = await query_session_messages(
+                http_session, sid, config.OPENCODE_API_URL, config.OPENCODE_PASSWORD
+            )
+        except Exception as e:
+            logger.error(f"Error querying session history: {e}")
+            msgs = []
+        await ws_relay.send(json.dumps({
+            "type": "session_history",
+            "req_id": req_id,
+            "session_id": sid,
+            "data": msgs,
+        }))
 
     # 3. 创建真实会话 (POST /session)
     elif action == "create_session":

@@ -315,7 +315,18 @@ class OpenCodeKeepAliveService : Service() {
 
     private fun startForegroundWithServiceType() {
         val notification = buildProgressNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // manifest 里声明的是 specialUse，运行时传的 type 必须是它的子集，
+            // 否则 Android 14+ 直接 IllegalArgumentException：
+            //   foregroundServiceType 0x00000001 is not a subset of 0x40000000
+            // —— 一发消息就崩（正好是用户点发送的时刻）。
+            startForeground(
+                NOTIFICATION_ID_PROGRESS,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10–13 没有 specialUse，只能用 dataSync
             startForeground(
                 NOTIFICATION_ID_PROGRESS,
                 notification,

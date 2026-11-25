@@ -80,6 +80,8 @@ interface RelayListener {
     fun onStreamStart(sessionId: String)
     fun onStreamChunk(sessionId: String, chunk: String)
     fun onStreamEnd(sessionId: String)
+    // v5.1.1: 电脑端发来的会话历史（打开老会话时补齐聊天区）
+    fun onSessionHistoryReceived(sessionId: String, messages: List<Pair<String, String>>) {}
     fun onAppError(code: String, message: String)
     // v2.3: 重同步语义——不再走 onAppError（不弹任务失败通知、不中止进度）
     fun onResyncRequired(message: String) {}
@@ -980,6 +982,21 @@ class RelayWebSocketClient(private val appContext: Context) {
                     val chunk = json.optString("chunk", "")
                     listener?.onStreamChunk(sessionId, chunk)
                 }
+                "session_history" -> {
+                    val sessionId = json.optString("session_id", "")
+                    val arr = json.optJSONArray("data")
+                    val items = mutableListOf<Pair<String, String>>()
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) {
+                            val o = arr.optJSONObject(i) ?: continue
+                            val role = o.optString("role", "assistant")
+                            val text = o.optString("text", "")
+                            if (text.isNotBlank()) items.add(role to text)
+                        }
+                    }
+                    listener?.onSessionHistoryReceived(sessionId, items)
+                }
+
                 "stream_end" -> {
                     val sessionId = json.optString("session_id", "default")
                     listener?.onStreamEnd(sessionId)
@@ -1084,6 +1101,12 @@ class RelayWebSocketClient(private val appContext: Context) {
 
     fun sendListSessions() {
         webSocket?.send(RelayMessageFactory.listSessions().toString())
+    }
+
+    /** 请求某个会话的历史消息（打开老会话时用）。 */
+    fun sendSessionHistory(sessionId: String) {
+        if (sessionId.isBlank()) return
+        webSocket?.send(RelayMessageFactory.sessionHistory(sessionId).toString())
     }
 
     fun sendCreateSession(title: String): SendResult {

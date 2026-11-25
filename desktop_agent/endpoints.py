@@ -27,6 +27,7 @@ class Endpoint:
 ENDPOINTS: Dict[str, Endpoint] = {
     "health":             Endpoint("GET",  "/global/health"),
     "session_list":       Endpoint("GET",  "/session"),
+    "session_messages":   Endpoint("GET",  "/session/{id}/message"),
     "session_create":     Endpoint("POST", "/session"),
     "session_abort":      Endpoint("POST", "/session/{id}/abort"),
     "permission_respond": Endpoint("POST", "/session/{id}/permissions/{permissionID}"),

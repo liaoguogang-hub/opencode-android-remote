@@ -18,6 +18,14 @@ object RelayMessageFactory {
             put("req_id", reqId)
         }
 
+    /** v5.1.1: 拉取某个会话的历史消息。 */
+    fun sessionHistory(sessionId: String, reqId: String = UUID.randomUUID().toString()): JSONObject =
+        JSONObject().apply {
+            put("action", "get_session_history")
+            put("req_id", reqId)
+            put("payload", JSONObject().apply { put("session_id", sessionId) })
+        }
+
     fun listDevices(): JSONObject =
         JSONObject().apply { put("type", "list_devices") }
 
