@@ -1,0 +1,5 @@
+
+# 本地 release 签名密钥（不提交）
+keystore.properties
+*.jks
+*.keystore

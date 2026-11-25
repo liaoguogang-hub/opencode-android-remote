@@ -166,6 +166,19 @@ class PairingCoordinator(
                     }
                     onDone(true, dispatch.getString(R.string.vm_012))
                     transports.logPair("desktop=${result.desktopName.ifBlank { desktopName }}")
+
+                    // v1.6 扫码认领成功后必须真的把 relay 连上。
+                    // 原来这里只更新了状态（"已配对成功，正在连接…"），但全仓库只有
+                    // 手动配对路径（pairDesktop）会调 connectRelay —— 扫码路径漏了，
+                    // 于是 App 永远停在「正在连接」。
+                    // 密钥用设备密钥（device_secret），不是房间主 secret。
+                    transports.connectRelay(
+                        TransportParams(
+                            relayUrl = relayUrl.trim(),
+                            accountId = result.accountId.ifBlank { accountId },
+                            secret = result.deviceSecret
+                        )
+                    )
                 } else {
                     val err = result.error.ifBlank { dispatch.getString(R.string.vm_013) }
                     dispatch.updateState { PairingStateReducer.applyClaimFailed(it, err) }
