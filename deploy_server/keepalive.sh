@@ -117,7 +117,20 @@ fi
 
 
 
-# ---------------------------------------------------------------- 5. Caddy 路由
+# ---------------------------------------------------------------- 5. Caddy 路由（relay + web UI）
+web_out=$(python3 "$HERE/ensure-web-route.py" --check 2>&1)
+if [ $? -eq 0 ]; then
+  echo "$web_out" | sed 's/^/  /'
+else
+  echo "$web_out" | sed 's/^/  /'
+  if [ "$REPORT_ONLY" -eq 1 ]; then
+    bad "opencode Web UI 路由缺失，需要重灌"
+  else
+    log "重灌 Web UI 路由…"
+    python3 "$HERE/ensure-web-route.py" | sed 's/^/  /'
+  fi
+fi
+
 route_out=$(python3 "$HERE/ensure-relay-route.py" --check 2>&1)
 if [ $? -eq 0 ]; then
   echo "$route_out" | sed 's/^/  /'

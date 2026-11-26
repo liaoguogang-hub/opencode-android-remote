@@ -68,8 +68,15 @@ class MainActivity : ComponentActivity() {
      * v5.0.3 (B-6 / C-1): 退到后台时把聊天记录与 relay 序号落盘。
      * 不放在 onDestroy——进程可能直接被系统回收。
      */
+    override fun onStart() {
+        super.onStart()
+        // 完成/失败通知只在后台发；用户盯着屏幕时不打扰
+        OpenCodeKeepAliveService.appInForeground = true
+    }
+
     override fun onStop() {
         super.onStop()
+        OpenCodeKeepAliveService.appInForeground = false
         viewModel.onAppBackgrounded()
     }
 

@@ -45,6 +45,24 @@ class OpenCodeKeepAliveService : Service() {
     }
 
     companion object {
+        /**
+         * 应用是否在前台。完成通知只为「在后台等待结果」的场景服务 ——
+         * 用户正盯着聊天界面时每轮都弹一条纯属打扰。
+         * MainActivity 在 onStart/onStop 里更新。
+         */
+        @Volatile
+        var appInForeground: Boolean = false
+
+        /** 用户可以在设置里彻底关掉「每轮完成」通知。 */
+        fun completionNotificationsEnabled(context: Context): Boolean =
+            context.getSharedPreferences("opencode_prefs", Context.MODE_PRIVATE)
+                .getBoolean("notify_turn_complete", true)
+
+        fun setCompletionNotificationsEnabled(context: Context, enabled: Boolean) {
+            context.getSharedPreferences("opencode_prefs", Context.MODE_PRIVATE)
+                .edit().putBoolean("notify_turn_complete", enabled).apply()
+        }
+
         const val CHANNEL_ID_PROGRESS = "opencode_channel_progress"
         const val CHANNEL_ID_ALERT = "opencode_channel_alert"
         const val NOTIFICATION_ID_PROGRESS = 1001
@@ -98,6 +116,9 @@ class OpenCodeKeepAliveService : Service() {
             fileCount: Int,
             sessionId: String
         ) {
+            // 用户盯着屏幕时不打扰；设置里关掉后也不发
+            if (appInForeground) return
+            if (!completionNotificationsEnabled(context)) return
             vibrateStatic(context, longArrayOf(0, 120, 80, 120))
             val mins = durationMs / 60000
             val secs = (durationMs % 60000) / 1000
@@ -122,6 +143,7 @@ class OpenCodeKeepAliveService : Service() {
          * v1.6 P0 任务通知：任务失败（错误摘要 + 进入会话按钮）
          */
         fun notifyTaskFailed(context: Context, errorSummary: String, sessionId: String) {
+            if (appInForeground) return
             vibrateStatic(context, longArrayOf(0, 200, 100, 200))
             val safeErr = sanitizeForNotification(context, errorSummary, 100)
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

@@ -44,6 +44,7 @@ import com.opencode.android.util.ErrorCodes
 import com.opencode.android.util.TAG_ALL
 import com.opencode.android.util.TAG_DEFAULT
 import com.opencode.android.util.TAG_KEY_TO_RES
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -124,10 +125,18 @@ fun ChatScreen(
     var isSearchActive by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
 
-    // 触摸/手动滑动检测：当用户向上滑动浏览历史时，暂停自动滚底
+    // 触摸/手动滑动检测：当用户向上滑动浏览历史时，暂停自动滚底。
+    //
+    // 只在**真的能往上翻**时才暂停：滚到底部后手指还在滑、或者一次惯性回弹，
+    // canScrollForward 会短暂为 true，于是横幅反复出现；而点「回到底部」时
+    // animateScrollToItem 自身也是 scrollInProgress，这一帧又会把暂停状态设回
+    // true —— 横幅点了不消失就是这个原因。
+    //
+    // 现在点按钮时先记下「是按钮触发的滚动」，正在自动滚底期间一律不再置为暂停。
+    var programmaticScroll by remember { mutableStateOf(false) }
     val isUserScrolling = listState.isScrollInProgress
     LaunchedEffect(isUserScrolling) {
-        if (isUserScrolling && listState.canScrollForward) {
+        if (isUserScrolling && !programmaticScroll && listState.canScrollBackward && listState.canScrollForward) {
             onSetAutoScrollPaused(true)
         }
     }
@@ -351,6 +360,34 @@ fun ChatScreen(
                                     onShowModelAgent()
                                 },
                                 leadingIcon = { Icon(Icons.Default.Tune, contentDescription = null) }
+                            )
+                            // 每轮完成通知开关：默认只在 App 切到后台时才弹，
+                            // 这里可以彻底关掉（连着跑任务时纯打扰）
+                            var notifyTurnDone by remember {
+                                mutableStateOf(
+                                    com.opencode.android.service.OpenCodeKeepAliveService
+                                        .completionNotificationsEnabled(context)
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (notifyTurnDone) "完成通知：开（仅后台）" else "完成通知：关"
+                                    )
+                                },
+                                onClick = {
+                                    notifyTurnDone = !notifyTurnDone
+                                    com.opencode.android.service.OpenCodeKeepAliveService
+                                        .setCompletionNotificationsEnabled(context, notifyTurnDone)
+                                    showMoreMenu = false
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (notifyTurnDone) Icons.Default.NotificationsActive
+                                        else Icons.Default.NotificationsOff,
+                                        contentDescription = null
+                                    )
+                                }
                             )
                             // v1.6 P1 项目管理中心
                             DropdownMenuItem(
@@ -704,8 +741,15 @@ fun ChatScreen(
                         .clickable {
                             onSetAutoScrollPaused(false)
                             coroutineScope.launch {
-                                if (uiState.messages.isNotEmpty()) {
-                                    listState.animateScrollToItem(uiState.messages.size - 1)
+                                programmaticScroll = true
+                                try {
+                                    if (uiState.messages.isNotEmpty()) {
+                                        listState.animateScrollToItem(uiState.messages.size - 1)
+                                    }
+                                } finally {
+                                    // 等这一帧的 scrollInProgress 落下去再解除标记
+                                    delay(150)
+                                    programmaticScroll = false
                                 }
                             }
                         }
