@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
-"""把 opencode 的 Web UI 暴露到 https://43.143.76.55:8443/opencode/
+"""让 opencode 的 Web UI 在 https://43.143.76.55:8443/opencode/ 下完整可用。
 
-难点
+问题
 ----
-opencode 的 Web UI 是 SPA，HTML 里写死**绝对路径**资源：
-    <script src="/assets/index-xxx.js">
-挂在 /opencode/ 下时浏览器会去站点根请求 /assets/...，被同端口的其它站点吞掉
-（返回一段 HTML），JS 加载失败 → 白屏。
+opencode 的 Web UI 是 SPA，前端把 API 和静态资源地址**硬编码成绝对路径**：
 
-两种常见修法在这里都不可行：
-  * 注入 <base href>（改响应体）—— 需要 Caddy 的 replace handler，
-    官方精简版 Caddy 没带这个模块（unknown module: http.handlers.replace）；
-  * 独立端口（:8444）—— 云安全组没放行，连接超时。
+    fetch("/global/health")      <script src="/assets/index-xxx.js">
 
-所以用**兜底路由**：在 8443 站点上，除了 /opencode/* 前缀，
-再额外把 SPA 会去请求的那几个根路径（/assets/*、/favicon*、/site.webmanifest、
-/api/*、/event …）也反代到 4096。这样浏览器按绝对路径请求也照样能拿到资源。
+挂在 /opencode/ 下时这些请求会打到站点根，被 8443 上的主应用（HAPI/DSH）
+用它的 SPA fallback 接走 —— 返回一段 HTML。表现就是「页面能打开，但没有模型、
+没法对话」。
 
-风险：这些根路径本该属于 8443 上的主应用。实测主应用不提供 /assets/ 下的
-文件名（返回的是它的 index.html），所以让 opencode 接管这些具体路径不会抢走
-真实资源；但 /api/* 这种通用前缀**不要**接管，只接管 SPA 实际用到的那几个。
+为什么可以直接接管这些根路径
+--------------------------
+实测主应用对这些路径返回的是**同一个 SPA fallback 页面**（md5 相同），
+说明它根本不提供这些 API，只是 catch-all 兜底。所以把 opencode 用到的
+根路径转给 4096 不会影响主应用任何功能。
+
+真正属于主应用的（/、/api/v1/*、静态资源等）**不动**。
 
 由 keepalive.sh 的看门狗重灌（admin API 改动不落盘）。
 """
@@ -31,19 +29,29 @@ import urllib.request
 
 ADMIN = os.environ.get("CADDY_ADMIN", "http://127.0.0.1:2019")
 SERVER = os.environ.get("CADDY_SERVER", "srv2")     # srv2 = :8443
-ROUTE_PATH = os.environ.get("WEB_ROUTE_PATH", "/opencode")
+PREFIX = os.environ.get("WEB_ROUTE_PATH", "/opencode")
 UPSTREAM = os.environ.get("WEB_UPSTREAM", "127.0.0.1:4096")
 HOST = os.environ.get("WEB_PUBLIC_HOST", "43.143.76.55")
 
-# SPA 会按绝对路径请求的根路径。只列确定属于 opencode 的，
-# 不用 /api/* 这类通用前缀（会和 8443 上的主应用抢）。
-ASSET_PATHS = [
-    "/assets/*",
+# opencode SPA 会用到的根路径。只列它真正需要的；主应用自己也在用的
+# （/、/api/v1/*）绝不碰。
+OC_PATHS = [
+    "/global/*",          # /global/health、/global/event(SSE)
+    "/config/*",          # /config/providers
+    "/config",            # 配置本体
+    "/provider", "/provider/*",
+    "/agent", "/agent/*",
+    "/session", "/session/*",
+    "/project", "/project/*",
+    "/app", "/app/*",
+    "/event",             # 旧版 SSE 路径
+    "/file", "/file/*",
+    "/find", "/find/*",
+    "/assets/*",          # 前端 JS/CSS
     "/favicon*",
     "/apple-touch-icon*",
     "/site.webmanifest",
     "/social-share.png",
-    "/opencode*",
 ]
 
 
@@ -57,7 +65,7 @@ def admin_post_config(cfg):
         ADMIN + "/config/", data=json.dumps(cfg).encode(), method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=20) as resp:
         return resp.status
 
 
@@ -65,18 +73,19 @@ def _proxy():
     return {
         "handler": "reverse_proxy",
         "upstreams": [{"dial": UPSTREAM}],
-        # /event 是 SSE，必须 h1
+        # /event 是 SSE，终端走 WebSocket，必须 h1
         "transport": {"protocol": "http", "versions": ["1.1"]},
     }
 
 
-def build_route():
+def build_prefix_route():
+    """带前缀的入口：/opencode/* → 剥前缀后转给 opencode。"""
     return {
-        "match": [{"host": [HOST], "path": [ROUTE_PATH, ROUTE_PATH + "/*"]}],
+        "match": [{"host": [HOST], "path": [PREFIX, PREFIX + "/*"]}],
         "handle": [{
             "handler": "subroute",
             "routes": [
-                {"handle": [{"handler": "rewrite", "strip_path_prefix": ROUTE_PATH}]},
+                {"handle": [{"handler": "rewrite", "strip_path_prefix": PREFIX}]},
                 {"handle": [_proxy()]},
             ],
         }],
@@ -84,37 +93,39 @@ def build_route():
     }
 
 
-def build_asset_route():
+def build_api_route():
+    """SPA 按绝对路径请求的那些根路径。"""
     return {
-        "match": [{"host": [HOST], "path": ASSET_PATHS}],
+        "match": [{"host": [HOST], "path": OC_PATHS}],
         "handle": [{"handler": "subroute", "routes": [{"handle": [_proxy()]}]}],
         "terminal": True,
     }
 
 
-def is_web_route(route):
-    for m in route.get("match") or []:
+def _is_prefix_route(r):
+    for m in r.get("match") or []:
         ps = m.get("path") or []
-        if ROUTE_PATH in ps and (ROUTE_PATH + "/*") in ps:
+        if PREFIX in ps and (PREFIX + "/*") in ps:
             return True
     return False
 
 
-def is_asset_route(route):
-    for m in route.get("match") or []:
+def _is_api_route(r):
+    for m in r.get("match") or []:
         ps = m.get("path") or []
-        if "/assets/*" in ps:
+        if "/global/*" in ps:
             return True
     return False
+
+
+def _is_ours(r):
+    return _is_prefix_route(r) or _is_api_route(r)
 
 
 def route_is_current(routes):
-    web = [r for r in routes if is_web_route(r)]
-    ast = [r for r in routes if is_asset_route(r)]
-    if len(web) != 1 or len(ast) != 1:
-        return False
-    # 两条都必须排在 catch-all 之前
-    return is_web_route(routes[0]) and is_asset_route(routes[1])
+    return (len(routes) >= 2
+            and _is_prefix_route(routes[0]) and _is_api_route(routes[1])
+            and "/api/v1" not in json.dumps(routes[1]))
 
 
 def install():
@@ -127,17 +138,18 @@ def install():
     if route_is_current(routes):
         print("  ✓ Web 路由已就位")
         return True
-    others = [r for r in routes if not is_web_route(r) and not is_asset_route(r)]
-    servers[SERVER]["routes"] = [build_route(), build_asset_route()] + others
+    others = [r for r in routes if not _is_ours(r)]
+    servers[SERVER]["routes"] = [build_prefix_route(), build_api_route()] + others
     admin_post_config(cfg)
-    print("  ✓ 已注入 Web 路由（/opencode + SPA 资源路径）")
+    print(f"  ✓ 已注入 Web 路由（{PREFIX} + {len(OC_PATHS)} 条 SPA 根路径）")
     return True
 
 
 def check():
     try:
         cfg = admin_get("/config/")
-        if route_is_current(cfg["apps"]["http"]["servers"][SERVER].get("routes", [])):
+        routes = cfg["apps"]["http"]["servers"][SERVER].get("routes", [])
+        if route_is_current(routes):
             print("  ✓ Web 路由已就位")
             return True
         print("  ! Web 路由缺失或不匹配")
