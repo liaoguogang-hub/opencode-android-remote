@@ -122,10 +122,27 @@ def _is_ours(r):
     return _is_prefix_route(r) or _is_api_route(r)
 
 
+def _catch_all_index(routes):
+    """第一条「没有 path 匹配」的路由下标（catch-all）；没有则返回末尾。"""
+    for i, r in enumerate(routes):
+        if not any(m.get("path") for m in (r.get("match") or [])):
+            return i
+    return len(routes)
+
+
 def route_is_current(routes):
-    return (len(routes) >= 2
-            and _is_prefix_route(routes[0]) and _is_api_route(routes[1])
-            and "/api/v1" not in json.dumps(routes[1]))
+    """两条路由都在，且都排在 catch-all 之前。"""
+    web = [r for r in routes if _is_prefix_route(r)]
+    api = [r for r in routes if _is_api_route(r)]
+    if len(web) != 1 or len(api) != 1:
+        return False
+    if "/api/v1" in json.dumps(api[0]):
+        return False
+    # 它们的位置必须都在 catch-all 之前，否则会被同端口的其它路由吃掉
+    idx_catch = _catch_all_index(routes)
+    pos_web = routes.index(web[0])
+    pos_api = routes.index(api[0])
+    return pos_web < idx_catch and pos_api < idx_catch
 
 
 def install():
@@ -138,8 +155,13 @@ def install():
     if route_is_current(routes):
         print("  ✓ Web 路由已就位")
         return True
+    # 插在第 0 位会踩别人：同端口还有 kimi-apk 的路由（每 3 分钟由它自己的
+    # 看门狗重灌）。只保证排在**真正的 catch-all** 之前，不打乱其它人的顺序。
     others = [r for r in routes if not _is_ours(r)]
-    servers[SERVER]["routes"] = [build_prefix_route(), build_api_route()] + others
+    idx = _catch_all_index(others)
+    others.insert(idx, build_api_route())
+    others.insert(idx, build_prefix_route())
+    servers[SERVER]["routes"] = others
     admin_post_config(cfg)
     print(f"  ✓ 已注入 Web 路由（{PREFIX} + {len(OC_PATHS)} 条 SPA 根路径）")
     return True
