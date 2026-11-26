@@ -93,6 +93,28 @@ def build_prefix_route():
     }
 
 
+def build_mcp_stub_route():
+    """给 opencode 1.18.34 缺失的 /api/mcp/* 返回空 JSON。
+
+    这一版的前端会 `GET /api/mcp/resource`（新版有、1.18.34 没有），请求落到
+    SPA 的 fallback 上拿到一段 HTML；前端把它当 JSON 用，
+    `Object.values(html).map(B => B.name.length)` 就抛
+    `TypeError: can't access property "length", B.name is undefined`，
+    整个界面白屏。
+
+    返回 `{}` 让 `Object.values({})` 得到空数组，前端就正常渲染了。
+    """
+    return {
+        "match": [{"host": [HOST], "path": ["/api/mcp", "/api/mcp/*"]}],
+        "handle": [{
+            "handler": "static_response",
+            "headers": {"Content-Type": ["application/json"]},
+            "body": "{}",
+        }],
+        "terminal": True,
+    }
+
+
 def build_api_route():
     """SPA 按绝对路径请求的那些根路径。"""
     return {
@@ -118,8 +140,15 @@ def _is_api_route(r):
     return False
 
 
+def _is_stub(r):
+    for m in r.get("match") or []:
+        if "/api/mcp" in (m.get("path") or []):
+            return True
+    return False
+
+
 def _is_ours(r):
-    return _is_prefix_route(r) or _is_api_route(r)
+    return _is_prefix_route(r) or _is_api_route(r) or _is_stub(r)
 
 
 def _catch_all_index(routes):
@@ -157,10 +186,12 @@ def install():
         return True
     # 插在第 0 位会踩别人：同端口还有 kimi-apk 的路由（每 3 分钟由它自己的
     # 看门狗重灌）。只保证排在**真正的 catch-all** 之前，不打乱其它人的顺序。
-    others = [r for r in routes if not _is_ours(r)]
+    others = [r for r in routes if not _is_ours(r) and not _is_stub(r)]
     idx = _catch_all_index(others)
     others.insert(idx, build_api_route())
     others.insert(idx, build_prefix_route())
+    # 桩路由要排在这两条之前（更具体的路径优先）
+    others.insert(idx, build_mcp_stub_route())
     servers[SERVER]["routes"] = others
     admin_post_config(cfg)
     print(f"  ✓ 已注入 Web 路由（{PREFIX} + {len(OC_PATHS)} 条 SPA 根路径）")
